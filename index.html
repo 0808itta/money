@@ -116,6 +116,7 @@ body{margin:0;min-height:100%;background:var(--color-bg);color:var(--color-fg);f
 
 </script>
 <script src="farm-data.js"></script>
+<script src="prices.js" onerror="window.FARM_PRICES=null"></script>
 <script>
 (function () {
   'use strict';
@@ -128,12 +129,38 @@ body{margin:0;min-height:100%;background:var(--color-bg);color:var(--color-fg);f
                 set: function (v) { try { localStorage.setItem(KEEP, v); } catch (e) {} },
                 del: function () { try { localStorage.removeItem(KEEP); } catch (e) {} } };
 
-  async function unlock(password) {
-    var P = window.FARM_DATA;
+  async function keyFor(password, P) {
     var base = await crypto.subtle.importKey('raw', new TextEncoder().encode(password.normalize('NFC')), 'PBKDF2', false, ['deriveKey']);
-    var key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: bytes(P.salt), iterations: P.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: bytes(P.salt), iterations: P.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  }
+  async function openBox(key, P) {
     var plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytes(P.iv) }, key, bytes(P.ct));
     return JSON.parse(new TextDecoder().decode(plain));
+  }
+  async function unlock(password) {
+    var P = window.FARM_DATA, Q = window.FARM_PRICES;
+    var key = await keyFor(password, P);
+    var app = await openBox(key, P);
+    if (Q && Q.ct) {
+      try { app.prices = await openBox(Q.salt === P.salt && Q.iter === P.iter ? key : await keyFor(password, Q), Q); }
+      catch (e) { app.prices = null; }
+    }
+    return app;
+  }
+
+  /* ----- 깃허브가 받아 온 시세로 평가액·수익률을 다시 계산해요 ----- */
+  function applyPrices(app) {
+    var Q = app.prices, rows = app.data && app.data.holdings;
+    if (!Q || !Q.items || !Array.isArray(rows)) return 0;
+    var n = 0;
+    app.data.holdings = rows.map(function (h) {
+      var q = Q.items[h.id];
+      if (!q || !(q.value > 0) || !(h.cost > 0)) return h;
+      n++;
+      var pnl = q.value - h.cost;
+      return Object.assign({}, h, { value: q.value, price_krw: q.price_krw, pnl: pnl, ret_pct: Math.round(pnl / h.cost * 10000) / 100 });
+    });
+    return n;
   }
 
   /* ----- 대시보드 코드가 쓰는 dash 도구를 여기서 대신 만들어 줘요 ----- */
@@ -186,7 +213,14 @@ body{margin:0;min-height:100%;background:var(--color-bg);color:var(--color-fg);f
 
   function start(app) {
     document.title = (app.meta && app.meta.title) || '주식 농장';
+    var live = applyPrices(app);
     root.innerHTML = app.page;
+    if (live) {
+      root.querySelectorAll('.fm-sub').forEach(function (p) {
+        if (p.textContent.indexOf('증권사 앱 화면 기준') >= 0)
+          p.textContent = '주가는 ' + app.prices.at + ' 자동 갱신 (' + live + '개 종목), 수량·평단가는 증권사 앱 화면 기준';
+      });
+    }
     root.hidden = false; gate.hidden = true;
     var dash = makeDash(app.data || {});
     (app.scripts || []).forEach(function (code) {
@@ -198,7 +232,7 @@ body{margin:0;min-height:100%;background:var(--color-bg);color:var(--color-fg);f
       if (window.innerWidth === lastW) return;
       lastW = window.innerWidth; clearTimeout(timer); timer = setTimeout(dash.runAll, 150);
     });
-    $('farm-built').textContent = app.meta && app.meta.built ? '자료 올린 날 ' + app.meta.built : '';
+    $('farm-built').textContent = live ? '시세 ' + app.prices.at : (app.meta && app.meta.built ? '자료 올린 날 ' + app.meta.built : '');
     bar.hidden = false;
     window.scrollTo(0, 0);
   }
