@@ -1,0 +1,45 @@
+name: 주식 농장 시세 갱신
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '40 7 * * 1-5'    # 한국 오후 4시 40분 (국내 장 마감 뒤)
+    - cron: '40 21 * * 1-5'   # 한국 다음 날 오전 6시 40분 (미국 장 마감 뒤)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 준비
+        run: pip install cryptography==44.0.0
+      - name: 시세 받기
+        env:
+          FARM_PASSWORD: ${{ secrets.FARM_PASSWORD }}
+        run: |
+          mkdir -p _site
+          cp index.html farm-data.js _site/
+          python update_prices.py --data farm-data.js --out _site/prices.js || echo "시세를 못 받아서 캡처 숫자 그대로 올려요"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
